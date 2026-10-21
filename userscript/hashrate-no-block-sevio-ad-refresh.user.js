@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Hashrate.no - Sevio Ad & Popup Blocker
+// @name         Hashrate.no - Ad & Popup Blocker
 // @namespace    https://hashrate.no/
-// @version      5.0
-// @description  Blocks the Sevio ad loader, dynamic Sevio ad containers, and common popup methods on Hashrate.no.
+// @version      6.0
+// @description  Blocks identified ad scripts, Sevio ads, and unwanted popups on Hashrate.no
 // @match        https://hashrate.no/*
 // @match        https://www.hashrate.no/*
 // @run-at       document-start
@@ -10,109 +10,115 @@
 // ==/UserScript==
 
 (() => {
-    'use strict';
+    "use strict";
 
-    const BLOCKED_SCRIPT = /cdn\.adx\.ws\/scripts\/loader\.js/i;
-    const SEVIO_SELECTOR = [
-        '.sevioads',
-        '[id^="wrapper-sevio-"]'
-    ].join(',');
+    const LOG = "[Hashrate blocker]";
 
-    // Block common script-driven popup methods.
-    window.open = function () {
-        console.warn('[Hashrate blocker] Blocked window.open()', ...arguments);
-        return null;
-    };
+    // Domains observed in the browser console.
+    const BLOCKED_HOSTS = [
+        "cdn.adx.ws",
+        "html-load.com",
+        "rule.evenyippee.com"
+    ];
 
-    window.alert = function () {
-        console.warn('[Hashrate blocker] Blocked alert()');
-    };
+    function isBlockedUrl(url) {
+        if (!url || typeof url !== "string") return false;
 
-    window.confirm = function () {
-        console.warn('[Hashrate blocker] Blocked confirm()');
-        return false;
-    };
+        try {
+            const parsed = new URL(url, location.href);
+            return BLOCKED_HOSTS.some(host =>
+            parsed.hostname === host ||
+            parsed.hostname.endsWith("." + host)
+            );
+        } catch {
+            return false;
+        }
+    }
 
-    window.prompt = function () {
-        console.warn('[Hashrate blocker] Blocked prompt()');
-        return null;
-    };
+    function shouldBlockScript(node) {
+        return node instanceof HTMLScriptElement &&
+        isBlockedUrl(node.src || node.getAttribute("src") || "");
+    }
 
-    // Stop the known external ad loader from being inserted.
+    // Block known external scripts before insertion.
     const originalAppendChild = Node.prototype.appendChild;
     Node.prototype.appendChild = function (node) {
-        if (
-            node instanceof HTMLScriptElement &&
-            node.src &&
-            BLOCKED_SCRIPT.test(node.src)
-        ) {
-            console.warn('[Hashrate blocker] Blocked Sevio loader:', node.src);
+        if (shouldBlockScript(node)) {
+            console.warn(LOG, "Blocked script:", node.src);
             return node;
         }
-
         return originalAppendChild.call(this, node);
     };
 
     const originalInsertBefore = Node.prototype.insertBefore;
     Node.prototype.insertBefore = function (node, referenceNode) {
-        if (
-            node instanceof HTMLScriptElement &&
-            node.src &&
-            BLOCKED_SCRIPT.test(node.src)
-        ) {
-            console.warn('[Hashrate blocker] Blocked Sevio loader:', node.src);
+        if (shouldBlockScript(node)) {
+            console.warn(LOG, "Blocked script:", node.src);
             return node;
         }
-
         return originalInsertBefore.call(this, node, referenceNode);
     };
 
-    // Remove ad containers, including ones added after page load.
-    function removeSevioAds(root = document) {
-        if (root.nodeType !== Node.ELEMENT_NODE &&
-            root.nodeType !== Node.DOCUMENT_NODE) {
-            return;
-            }
-
-            if (root instanceof Element && root.matches(SEVIO_SELECTOR)) {
-                root.remove();
-                return;
-            }
-
-            root.querySelectorAll?.(SEVIO_SELECTOR).forEach(element => {
-                element.remove();
-            });
+    // Block window.open popups.
+    try {
+        window.open = function (url) {
+            console.warn(LOG, "Blocked window.open:", url || "(no URL)");
+            return null;
+        };
+    } catch (error) {
+        console.warn(LOG, "Could not override window.open:", error);
     }
 
-    // Watch for dynamically generated Sevio containers.
-    const observer = new MutationObserver(mutations => {
-        for (const mutation of mutations) {
-            for (const node of mutation.addedNodes) {
-                removeSevioAds(node);
-            }
-        }
-    });
+    // Prevent basic browser dialogs from interrupting browsing.
+    for (const method of ["alert", "confirm", "prompt"]) {
+        try {
+            window[method] = () => method === "confirm" ? false : null;
+        } catch {}
+    }
 
+    // Remove Sevio ad wrappers without deleting the main page content.
+    function removeAds(root = document) {
+        if (!root || typeof root.querySelectorAll !== "function") return;
+
+        if (
+            root instanceof Element &&
+            (root.matches(".sevioads, [id^='wrapper-sevio-']"))
+        ) {
+            root.remove();
+            return;
+        }
+
+        root.querySelectorAll(
+            ".sevioads, [id^='wrapper-sevio-']"
+        ).forEach(element => element.remove());
+    }
+
+    // Watch for ad containers injected after initial page load.
     function startObserver() {
         if (!document.documentElement) {
             requestAnimationFrame(startObserver);
             return;
         }
 
+        removeAds();
+
+        const observer = new MutationObserver(records => {
+            for (const record of records) {
+                for (const node of record.addedNodes) {
+                    if (node.nodeType === Node.ELEMENT_NODE) {
+                        removeAds(node);
+                    }
+                }
+            }
+        });
+
         observer.observe(document.documentElement, {
             childList: true,
             subtree: true
         });
-
-        removeSevioAds(document);
     }
 
     startObserver();
 
-    // Remove any already-present Sevio containers once the page is ready.
-    document.addEventListener('DOMContentLoaded', () => {
-        removeSevioAds(document);
-    }, { once: true });
-
-    console.info('[Hashrate blocker] Active on', location.hostname);
+    console.info(LOG, "Active on", location.hostname);
 })();
