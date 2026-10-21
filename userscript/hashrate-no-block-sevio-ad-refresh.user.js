@@ -1,9 +1,9 @@
 
 // ==UserScript==
-// @name         Hashrate.no - Block Sevio Ad Refresh
+// @name         Hashrate.no - Hard Popup Blacklist
 // @namespace    https://hashrate.no/
-// @version      3.2
-// @description  Suppress the Hashrate ad-warning alert and remove error-report modal iframes
+// @version      4.0
+// @description  Block site-triggered dialogs, popups, and error-report modal
 // @match        https://hashrate.no/*
 // @match        https://www.hashrate.no/*
 // @run-at       document-start
@@ -13,41 +13,47 @@
 (function () {
     'use strict';
 
-    const PREFIX = '[Hashrate Ad Blocker]';
+    const PREFIX = '[Hashrate Popup Blacklist]';
 
-    function log(message, data) {
-        console.warn(
-            PREFIX,
-            new Date().toLocaleTimeString(),
-                     message,
-                     data ?? ''
-        );
+    function log(message, details = '') {
+        console.warn(PREFIX, message, details);
     }
 
-    // =========================================================
-    // 1. Suppress the specific native ad-warning alert
-    // =========================================================
+    // ---------------------------------------------------------
+    // 1. Suppress JavaScript dialogs
+    // ---------------------------------------------------------
 
-    const originalAlert = window.alert;
-
+    // Suppress alert() messages from the site.
     window.alert = function (message) {
-        if (
-            typeof message === 'string' &&
-            /please allow ads on this site/i.test(message)
-        ) {
-            log('Suppressed ad-warning alert:', message);
-            console.trace(PREFIX + ' Alert call stack');
-            return;
-        }
-
-        return originalAlert.call(window, message);
+        log('Blocked alert:', message);
     };
 
-    // =========================================================
-    // 2. Identify the Error Report modal iframe
-    // =========================================================
+    // Automatically decline confirmation dialogs.
+    window.confirm = function (message) {
+        log('Blocked confirm:', message);
+        return false;
+    };
 
-    function isErrorReportURL(url) {
+    // Cancel prompt dialogs.
+    window.prompt = function (message) {
+        log('Blocked prompt:', message);
+        return null;
+    };
+
+    // ---------------------------------------------------------
+    // 2. Block window.open() popup attempts
+    // ---------------------------------------------------------
+
+    window.open = function (url) {
+        log('Blocked window.open():', url || '(no URL)');
+        return null;
+    };
+
+    // ---------------------------------------------------------
+    // 3. Remove the known error-report iframe
+    // ---------------------------------------------------------
+
+    function isBlockedURL(url) {
         if (!url) return false;
 
         try {
@@ -62,43 +68,24 @@
         }
     }
 
-    function removeErrorReport(element) {
+    function removeBlockedFrame(element) {
+        if (!(element instanceof Element)) return;
+
         if (
-            !(element instanceof Element) ||
-            !isErrorReportURL(element.getAttribute('src'))
+            element.matches('iframe[src]') &&
+            isBlockedURL(element.getAttribute('src'))
         ) {
-            return false;
+            log('Removed error-report iframe:', element.src);
+            element.remove();
         }
 
-        log('Removing error-report iframe:', element.src);
-        element.remove();
-
-        return true;
-    }
-
-    function cleanup(root = document) {
-        if (root instanceof Element) {
-            removeErrorReport(root);
-        }
-
-        root.querySelectorAll?.('iframe[src]').forEach(
-            removeErrorReport
-        );
-    }
-
-    // =========================================================
-    // 3. Watch for matching iframes being inserted
-    // =========================================================
-
-    const observer = new MutationObserver(mutations => {
-        for (const mutation of mutations) {
-            for (const node of mutation.addedNodes) {
-                if (node instanceof Element) {
-                    cleanup(node);
-                }
+        element.querySelectorAll?.('iframe[src]').forEach(frame => {
+            if (isBlockedURL(frame.getAttribute('src'))) {
+                log('Removed error-report iframe:', frame.src);
+                frame.remove();
             }
-        }
-    });
+        });
+    }
 
     function startObserver() {
         if (!document.documentElement) {
@@ -106,15 +93,23 @@
             return;
         }
 
+        const observer = new MutationObserver(mutations => {
+            for (const mutation of mutations) {
+                for (const node of mutation.addedNodes) {
+                    removeBlockedFrame(node);
+                }
+            }
+        });
+
         observer.observe(document.documentElement, {
             childList: true,
             subtree: true
         });
 
-        cleanup();
+        removeBlockedFrame(document.documentElement);
     }
 
     startObserver();
 
-    log('Version 3.2 active');
+    log('Popup blacklist active');
 })();
