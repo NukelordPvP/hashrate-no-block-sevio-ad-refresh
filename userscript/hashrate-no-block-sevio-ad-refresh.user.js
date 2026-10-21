@@ -1,9 +1,9 @@
 
 // ==UserScript==
-// @name         Hashrate.no - Sevio Popup Fix
+// @name         Hashrate.no - Block Sevio Ad Refresh
 // @namespace    https://hashrate.no/
-// @version      3.1
-// @description  Safely remove the Error Report popup without hooking site JavaScript
+// @version      3.2
+// @description  Suppress the Hashrate ad-warning alert and remove error-report modal iframes
 // @match        https://hashrate.no/*
 // @match        https://www.hashrate.no/*
 // @run-at       document-start
@@ -13,40 +13,96 @@
 (function () {
     'use strict';
 
-    const TARGET_HOST = 'report.error-report.com';
-    const TARGET_PATH = '/modal';
+    const PREFIX = '[Hashrate Ad Blocker]';
 
-    function isTarget(element) {
-        if (!(element instanceof Element)) return false;
+    function log(message, data) {
+        console.warn(
+            PREFIX,
+            new Date().toLocaleTimeString(),
+                     message,
+                     data ?? ''
+        );
+    }
 
-        const url = element.getAttribute('src');
+    // =========================================================
+    // 1. Suppress the specific native ad-warning alert
+    // =========================================================
+
+    const originalAlert = window.alert;
+
+    window.alert = function (message) {
+        if (
+            typeof message === 'string' &&
+            /please allow ads on this site/i.test(message)
+        ) {
+            log('Suppressed ad-warning alert:', message);
+            console.trace(PREFIX + ' Alert call stack');
+            return;
+        }
+
+        return originalAlert.call(window, message);
+    };
+
+    // =========================================================
+    // 2. Identify the Error Report modal iframe
+    // =========================================================
+
+    function isErrorReportURL(url) {
         if (!url) return false;
 
         try {
             const parsed = new URL(url, location.href);
-            return parsed.hostname === TARGET_HOST &&
-            parsed.pathname === TARGET_PATH;
+
+            return (
+                parsed.hostname === 'report.error-report.com' &&
+                parsed.pathname === '/modal'
+            );
         } catch {
             return false;
         }
     }
 
-    function removePopup() {
-        document.querySelectorAll('iframe[src]').forEach(frame => {
-            if (!isTarget(frame)) return;
+    function removeErrorReport(element) {
+        if (
+            !(element instanceof Element) ||
+            !isErrorReportURL(element.getAttribute('src'))
+        ) {
+            return false;
+        }
 
-            console.warn('[Hashrate Popup Fix] Removing error-report iframe');
+        log('Removing error-report iframe:', element.src);
+        element.remove();
 
-            // Remove only the iframe. Do not remove arbitrary site containers.
-            frame.remove();
-        });
+        return true;
     }
 
-    const observer = new MutationObserver(() => removePopup());
+    function cleanup(root = document) {
+        if (root instanceof Element) {
+            removeErrorReport(root);
+        }
 
-    function start() {
+        root.querySelectorAll?.('iframe[src]').forEach(
+            removeErrorReport
+        );
+    }
+
+    // =========================================================
+    // 3. Watch for matching iframes being inserted
+    // =========================================================
+
+    const observer = new MutationObserver(mutations => {
+        for (const mutation of mutations) {
+            for (const node of mutation.addedNodes) {
+                if (node instanceof Element) {
+                    cleanup(node);
+                }
+            }
+        }
+    });
+
+    function startObserver() {
         if (!document.documentElement) {
-            requestAnimationFrame(start);
+            requestAnimationFrame(startObserver);
             return;
         }
 
@@ -55,8 +111,10 @@
             subtree: true
         });
 
-        removePopup();
+        cleanup();
     }
 
-    start();
+    startObserver();
+
+    log('Version 3.2 active');
 })();
